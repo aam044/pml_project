@@ -1,0 +1,224 @@
+---
+title: "Practical Machine Learning Project Writeup"
+author: "Alexey Maloletkin"
+date: "August 21, 2015"
+output:
+  html_document:
+    pandoc_args: [
+      "+RTS", "-K64m",
+      "-RTS"
+    ]
+---
+```{r echo=FALSE}
+load("/Users/aam044/mydata.RData")
+```
+#Project
+##Goal
+The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. 
+
+##Background
+From project assignment:
+"Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset)."
+
+##Data Source
+The training data for this project are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har
+
+#Getting data
+```{r, eval=FALSE}
+if (!length(list.files('.', pattern='pml-training.csv'))>0) 
+{
+  fileUrl='https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+  download.file(url = fileUrl, method = 'curl', destfile = 'pml-training.csv')
+  fileUrl='https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+  download.file(url = fileUrl, method = 'curl', destfile = 'pml-testing.csv')
+}
+```
+
+I did some initial data lookup into files to identify data structure/potential issues.
+Mostly related to NA vslues storing - I found in addition to NA there is a lot of empty values as well as #DIV/0!
+
+```{r eval=FALSE}
+data <- read.csv(file="pml-training.csv", header=TRUE, sep=",", na.strings=c("NA","#DIV/0!","") )
+test_data <- read.csv(file="pml-testing.csv", header=TRUE, sep=",", na.strings=c("NA","#DIV/0!","") )
+```
+Let's check what size of data we loaded
+```{r}
+dim(data)
+```
+
+```{r}
+dim(test_data)
+```
+##Defining training and testing dataset
+
+We will split dataset by classe in proportion 60% for training and 40% for testing/validation
+Let set seed first so data will be reproducable.
+```{r}
+set.seed(1234)
+```
+
+```{r eval=FALSE}
+inTrain = createDataPartition(data$classe, p = 0.6)[[1]]
+
+training = data[inTrain, ]
+testing = data[-inTrain, ]
+```
+Check size of training dataset
+```{r}
+dim(training)
+```
+##Install required packages
+```{r eval}
+if (!"caret" %in% installed.packages()) install.packages("caret",  dependencies = c("Depends", "Suggests"))
+library(caret)
+```
+
+#Cleaning data and identifying predictors
+
+##Removing book keeping variables
+
+Looks like X is just index - let plot X to check
+```{r}
+ggplot(data = training, aes(x = X, y = classe, color=classe)) + geom_point() 
+```
+```{r echo=FALSE}
+featurePlot(x = training[, c( "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp",
+                              "new_window", "num_window")], y = training$classe, plot = "pairs")
+```
+
+Lets look on variables in this dataset. I want to find out if some of variables have significant percentage of NAs and also want to see unique count of different values.
+
+```{r}
+na_count <- as.data.frame(sapply(training, function(x) (sum(is.na(x)))*100/length(x) ) )
+unique_count <- as.data.frame(sapply(training, function(x) (length(unique(x))) ) )
+data_check <- cbind(na_count, unique_count)
+colnames(data_check)<-c("% of NAs", "Unique values")
+```
+
+```{r, results='asis'}
+knitr::kable(data_check)
+```
+
+I plot featurePlot for some of predictors from this list. 
+
+```{r }
+featurePlot(x = training[, c("roll_belt", "pitch_belt", "yaw_belt", "total_accel_belt",
+                             "roll_dumbbell", "pitch_dumbbell", "yaw_dumbbell")],
+            y = training$classe, plot = "pairs")
+```
+
+And based on this chart I think most appropriate machine learning algorithm is tree based (I plan to use random forest and tree bag). 
+From this perspective I try to decrease number of predictors because significant time required to build model based on big number of variables. 
+
+I decided to use all variables in this dataset that have 0% of NAs.
+There are 29 of them: roll_belt, pitch_belt, yaw_belt, total_accel_belt, gyros_belt_x, gyros_belt_y, 
+gyros_belt_z, accel_belt_x, accel_belt_y, accel_belt_z, magnet_belt_x, magnet_belt_y, magnet_belt_z, roll_arm, pitch_arm, yaw_arm+total_accel_arm, gyros_arm_x, gyros_arm_y, gyros_arm_z, accel_arm_x, accel_arm_y, accel_arm_z, magnet_arm_x, magnet_arm_y, magnet_arm_z, roll_dumbbell, pitch_dumbbell, yaw_dumbbell
+
+#Building Predicting Model
+
+##Using Decision Tree algorithm
+```{r eval=FALSE}
+modelFit1 <- train(classe ~ roll_belt+pitch_belt+yaw_belt+total_accel_belt+
+                     gyros_belt_x+gyros_belt_y+gyros_belt_z+
+                     accel_belt_x+accel_belt_y+accel_belt_z+
+                     magnet_belt_x+magnet_belt_y+magnet_belt_z+
+                     roll_arm+pitch_arm+
+                     yaw_arm+total_accel_arm+
+                     gyros_arm_x+gyros_arm_y+gyros_arm_z+
+                     accel_arm_x+accel_arm_y+accel_arm_z+
+                     magnet_arm_x+magnet_arm_y+magnet_arm_z+
+                     roll_dumbbell+pitch_dumbbell+yaw_dumbbell
+                     , method = "rpart", 
+                   data = training)
+```
+
+```{r}
+print(modelFit1)
+```
+
+Lets validate this model against our testing dataset
+
+```{r}
+predictions <- predict(modelFit1, newdata = testing)
+C1 <- confusionMatrix(predictions, testing$classe)
+print(C1)
+```
+As we see result is not very good.
+
+
+##Using Random Forests algorithm
+
+```{r eval=FALSE}
+modelFit2 <- train(classe ~ roll_belt+pitch_belt+yaw_belt+total_accel_belt+
+                     gyros_belt_x+gyros_belt_y+gyros_belt_z+
+                     accel_belt_x+accel_belt_y+accel_belt_z+
+                     magnet_belt_x+magnet_belt_y+magnet_belt_z+
+                     roll_arm+pitch_arm+
+                     yaw_arm+total_accel_arm+
+                     gyros_arm_x+gyros_arm_y+gyros_arm_z+
+                     accel_arm_x+accel_arm_y+accel_arm_z+
+                     magnet_arm_x+magnet_arm_y+magnet_arm_z+
+                     roll_dumbbell+pitch_dumbbell+yaw_dumbbell, method = "rf", 
+                  data = training)
+```
+```{r echo=FALSE}
+load("/Users/aam044/project_randomforest.rds")
+```
+
+```{r}
+print(modelFit2)
+```
+
+Lets run cross validation on **testing** dataset (out-of-sample data)
+
+```{r}
+predictions <- predict(modelFit2, newdata = testing)
+C2 <- confusionMatrix(predictions, testing$classe)
+print(C2)
+```
+
+Result on testing dataset is good.
+
+##Using Bagged CART algorithm
+
+```{r eval=FALSE}
+modelFit3 <- train(classe ~ roll_belt+pitch_belt+yaw_belt+total_accel_belt+
+                     gyros_belt_x+gyros_belt_y+gyros_belt_z+
+                     accel_belt_x+accel_belt_y+accel_belt_z+
+                     magnet_belt_x+magnet_belt_y+magnet_belt_z+
+                     roll_arm+pitch_arm+
+                     yaw_arm+total_accel_arm+
+                     gyros_arm_x+gyros_arm_y+gyros_arm_z+
+                     accel_arm_x+accel_arm_y+accel_arm_z+
+                     magnet_arm_x+magnet_arm_y+magnet_arm_z+
+                     roll_dumbbell+pitch_dumbbell+yaw_dumbbell, method = "treebag", 
+                   data = training)
+```
+
+```{r}
+print(modelFit3)
+```
+
+Lets estimate perfromance of modelFit3 on testing dataset
+
+```{r}
+predictions <- predict(modelFit3, newdata = testing)
+C3 <- confusionMatrix(predictions, testing$classe)
+print(C3)
+```
+
+##Final conclusion
+When we doing cross-validation on test dataset "Random Trees" (error rate: **2.17%**, Accuracy : **0.9772**) demonstrated better accuracy than "Bagging classification trees" (Accuracy : **0.9675**). So we will use modelFit2 to predict on project test data.
+
+Lets run our prediction on test dataset
+
+```{r}
+answer_prediction <- predict(modelFit2, newdata = test_data)
+print(answer_prediction)
+```
